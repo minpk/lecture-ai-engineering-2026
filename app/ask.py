@@ -3,6 +3,7 @@
 使い方:
     uv run python -m app.ask "LoRAとは何ですか？"
     uv run python -m app.ask            # 質問を省略すると、講座に固有の質問をする
+    uv run python -m app.ask --interactive  # 会話履歴を保って対話する
 
 ツールも会話履歴も持たない「素の」呼び出し。
 講座に固有のことを聞くと、「分からない」と答えるか、一般論でもっともらしく答える
@@ -11,6 +12,7 @@
 """
 
 import argparse
+import time
 
 from google import genai
 from google.genai import errors
@@ -23,20 +25,65 @@ DEFAULT_QUESTION = "AIE2026の講座の宿題にある「3レベル」とは何�
 
 def ask(question: str) -> str:
     client = genai.Client(api_key=get_api_key())
+    started_at = time.perf_counter()
     response = client.models.generate_content(model=MODEL, contents=question)
+    elapsed_seconds = time.perf_counter() - started_at
 
-    # TODO(第1回 演習): response.usage_metadata から
-    #   入力トークン数と出力トークン数を表示してみよう（Copilotに頼んでよい）
+    _print_usage(response, elapsed_seconds)
 
     return response.text
+
+
+def _print_usage(response, elapsed_seconds: float) -> None:
+    usage = response.usage_metadata
+    input_tokens = usage.prompt_token_count if usage is not None else "不明"
+    output_tokens = usage.candidates_token_count if usage is not None else "不明"
+    print(
+        f"[トークン] 入力: {input_tokens}, 出力: {output_tokens} "
+        f"[応答時間] {elapsed_seconds:.2f}秒"
+    )
+
+
+def interactive_chat() -> None:
+    client = genai.Client(api_key=get_api_key())
+    chat = client.chats.create(model=MODEL)
+    print("対話モードです。「終了」と入力すると終わります。")
+
+    while True:
+        try:
+            question = input("あなた> ").strip()
+        except EOFError:
+            print()
+            break
+        if question.lower() in {"終了", "exit", "quit"}:
+            break
+        if not question:
+            continue
+
+        started_at = time.perf_counter()
+        response = chat.send_message(question)
+        elapsed_seconds = time.perf_counter() - started_at
+        _print_usage(response, elapsed_seconds)
+        print(f"AI> {response.text}\n")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="素のLLMに質問する")
     parser.add_argument("question", nargs="?", default=DEFAULT_QUESTION)
+    parser.add_argument(
+        "--interactive", "-i", action="store_true", help="会話履歴を保ったまま対話する"
+    )
     args = parser.parse_args()
 
     print(f"[model] {MODEL}")
+    if args.interactive:
+        try:
+            interactive_chat()
+        except errors.APIError as e:
+            print(api_error_message(e.code, e.message))
+            raise SystemExit(1)
+        return
+
     print(f"[質問] {args.question}\n")
     try:
         print(ask(args.question))
